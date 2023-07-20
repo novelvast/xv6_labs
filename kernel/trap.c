@@ -6,6 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 
+extern pte_t* walk(pagetable_t, uint64, int);
+
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -65,6 +68,44 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) { // write page fault
+    uint64 va = PGROUNDDOWN(r_stval());
+    pte_t *pte;
+    if (va > p->sz || (pte = walk(p->pagetable, va, 0)) == 0){
+      p->killed = 1;
+      goto end;
+    }
+
+    if (((*pte) & PTE_COW) == 0 || ((*pte) & PTE_V) == 0 || ((*pte) & PTE_U) == 0){
+      p->killed = 1;
+      goto end;
+    }
+
+    uint64 pa = PTE2PA(*pte);
+    kacquirelock();
+    uint ref = kgetref((void*)pa);
+    if (ref == 1){
+      *pte = ((*pte) & (~PTE_COW)) | PTE_W;
+    }
+    else {
+      char* mem = kalloc();
+      if (mem == 0){
+        p->killed = 1;
+        kreleaselock();
+        goto end;
+      }
+
+      memmove(mem, (char*)pa, PGSIZE);
+      uint flag = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+      if (mappages(p->pagetable, va, PGSIZE, (uint64)mem,flag) != 0){
+        kfree(mem);
+        p->killed = 1;
+        kreleaselock();
+        goto end;
+      }
+      kfree((void*)pa);
+    }
+    kreleaselock();
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -73,6 +114,7 @@ usertrap(void)
     p->killed = 1;
   }
 
+end:
   if(p->killed)
     exit(-1);
 
