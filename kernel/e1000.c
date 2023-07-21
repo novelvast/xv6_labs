@@ -103,6 +103,38 @@ e1000_transmit(struct mbuf *m)
   // a pointer so that it can be freed after sending.
   //
   
+  int tx_tail; // TDT Register
+  struct tx_desc* tx_dp; // the descriptor pointed to by the TDT Register
+  struct mbuf* tx_mbuf; // the mbuf pointed to by the descriptor
+
+  acquire(&e1000_lock);
+  tx_tail = regs[E1000_TDT];
+  tx_dp = &tx_ring[tx_tail];
+
+  // no empty descriptor
+  if ((tx_dp->status & E1000_TXD_STAT_DD) == 0) {
+    release(&e1000_lock);
+    return -1;
+  }
+  // free the last mbuf that was transmitted from that descriptor
+  tx_mbuf = tx_mbufs[tx_tail];
+  if (tx_mbuf) {
+    mbuffree(tx_mbuf);
+  }
+
+  // fill the descriptor
+  tx_mbufs[tx_tail] = m;
+
+  tx_dp->addr = (uint64)m->head;
+  tx_dp->length = m->len;
+  tx_dp->cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+
+  // update the position
+  tx_tail = (tx_tail + 1) % RX_RING_SIZE;
+  regs[E1000_TDT] = tx_tail;
+
+  release(&e1000_lock);
+
   return 0;
 }
 
@@ -115,6 +147,39 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+
+  int rx_tail;
+  struct rx_desc* rx_dp;
+  struct mbuf *rx_mbuf, *rx_nmbuf;
+  rx_tail = regs[E1000_RDT];
+  while (1) {
+    acquire(&e1000_lock);
+
+    rx_tail = (rx_tail + 1) % RX_RING_SIZE;
+    rx_dp = &rx_ring[rx_tail];
+    // check if a new packet is available
+    if ((rx_dp->status & E1000_RXD_STAT_DD) == 0) {
+      release(&e1000_lock);
+      break;
+    }
+
+    // update the mbuf's m->len
+    rx_mbuf = rx_mbufs[rx_tail];
+    rx_mbuf->len = rx_dp->length;
+
+    // allocate a new mbuf
+    rx_nmbuf = mbufalloc(0);
+
+    // update the rx_dp's state
+    rx_dp->addr = (uint64)rx_nmbuf->head;
+    rx_dp->status = 0;
+    // update the RDT
+    rx_mbufs[rx_tail] = rx_nmbuf;
+    regs[E1000_RDT] = rx_tail;
+    release(&e1000_lock);
+    // deliver the mbuf to the network stack
+    net_rx(rx_mbuf);
+  }
 }
 
 void
