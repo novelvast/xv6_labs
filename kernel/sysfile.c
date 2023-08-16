@@ -300,10 +300,11 @@ sys_open(void)
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
-      end_op();
+            end_op();
       return -1;
     }
-  } else {
+  } 
+  else {
     int max_depth = 20, depth = 0;
     while (1) {
       if ((ip = namei(path)) == 0) {
@@ -505,7 +506,7 @@ sys_pipe(void)
 }
 
 
-uint64
+uint64 
 sys_symlink(void){
   char path[MAXPATH], target[MAXPATH];
   struct inode *ip;

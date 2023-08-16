@@ -398,18 +398,51 @@ bmap(struct inode *ip, uint bn)
       log_write(bp);
     }
     brelse(bp);
+    return addr;
+  }
+  bn -= NINDIRECT;
 
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if ((addr = a[bn % NINDIRECT]) == 0){
-      a[bn % NINDIRECT] = addr = balloc(ip->dev);
-      log_write(bp);
+  if (bn < NDINDIRECT){
+    if ((addr = ip->addrs[NDIRECT + 1]) == 0)
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+    uint bni, bsz = NINDIRECT;
+    for (int i = 0; i < 2; i++) {
+      bp = bread(ip->dev, addr);
+      a = (uint*)bp->data;
+      bni = (bn / bsz) % NINDIRECT;
+      bsz /= NINDIRECT;
+      if ((addr = a[bni]) == 0) {
+        a[bni] = addr = balloc(ip->dev);
+        log_write(bp);
+      }
+      brelse(bp);
     }
-    brelse(bp);
     return addr;
   }
 
   panic("bmap: out of range");
+}
+
+static void
+nbfree(struct inode* ip, uint b, uint level)
+{
+  if (level == 0) {
+    bfree(ip->dev, b);
+    return;
+  }
+  struct buf *bp;
+  uint i;
+  uint *a;
+
+  bp = bread(ip->dev, b);
+  a = (uint*)bp->data;
+  for(i = 0; i < NINDIRECT; i++){
+    if(a[i])
+      nbfree(ip, a[i], level - 1);
+  }
+  brelse(bp);
+
+  bfree(ip->dev, b);
 }
 
 // Truncate inode (discard contents).
@@ -440,27 +473,8 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
-  struct buf *bp2;
-  uint *a2;
-
   if(ip->addrs[NDIRECT + 1]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
-    a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
-      if(a[j]){
-        bp2 = bread(ip->dev, a[j]);
-        a2 = (uint*)bp2->data;
-        for (i = 0; i < NINDIRECT; i++){
-          if (a2[i])
-            bfree(ip->dev, a2[i]);
-        }
-        brelse(bp2);
-        bfree(ip->dev, a[j]);
-        a[j] = 0;
-      }
-    }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    nbfree(ip, ip->addrs[NDIRECT + 1], 2);
     ip->addrs[NDIRECT + 1] = 0;
   }
 
